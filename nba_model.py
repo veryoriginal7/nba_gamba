@@ -4,46 +4,97 @@ from sklearn.metrics import accuracy_score
 from sklearn.metrics import roc_auc_score
 import joblib
 from sklearn.ensemble import RandomForestClassifier
-
+from collections import defaultdict
 
 df = pd.read_csv("nba_games_seasons_2021_2024.csv", parse_dates=["GAME_DATE"])
 df = df.sort_values("GAME_DATE").reset_index(drop=True)
 teams = pd.unique(df[["home_team_id", "away_team_id"]].values.ravel())
 elo = {team: 1500 for team in teams}
+def_elo = {team: 1500 for team in teams}
 K = 20
-
+K_def = 15
 home_elo_list = []
 away_elo_list = []
+home_def_elo_list =[]
+away_def_elo_list =[]
+
+league_avg_pts = (
+    df["home_pts"].sum() + df["away_pts"].sum()
+    ) / (2 * len(df))
+h2h = defaultdict(lambda: {"home_wins": 0, "games": 0})
+h2h_home_pct = []
 
 for _, row in df.iterrows():
+    season = row["SEASON_ID"]
+    home = row["home_team_id"]
+    away = row["away_team_id"]
+
+    key = (season, home, away)
+
+    record = h2h[key]
+
+    # compute BEFORE update
+    if record["games"] == 0:
+        pct = 0.5   # neutral prior
+    else:
+        pct = record["home_wins"] / record["games"]
+
+    h2h_home_pct.append(pct)
+
+    # update AFTER storing
+    record["games"] += 1
+    if row["home_win"] == 1:
+        record["home_wins"] += 1
+    
     home = row["home_team_id"]
     away = row["away_team_id"]
 
     home_elo = elo[home]
     away_elo = elo[away]
-
+    def_home_elo = def_elo[home]
+    def_away_elo = def_elo[away]
     # store PRE-GAME elo
     home_elo_list.append(home_elo)
     away_elo_list.append(away_elo)
-
+    home_def_elo_list.append(def_home_elo)
+    away_def_elo_list.append(def_away_elo)
     # expected outcome
     exp_home = 1 / (1 + 10 ** ((away_elo - home_elo) / 400))
     exp_away = 1 - exp_home
+    expected_pts_home = league_avg_pts * 10**((def_home_elo - def_away_elo) / 400)
+    expected_pts_away = league_avg_pts * 10**((def_away_elo - def_home_elo) / 400)
 
     # actual outcome
     home_win = row["home_win"]
     away_win = 1 - home_win
+    actual_pts_home = row["home_pts"]
+    actual_pts_away = row["away_pts"]
 
+
+    # update defensive elo AFTER the game
+    def_elo[home] -= (K_def * (actual_pts_home - expected_pts_away))/league_avg_pts
+    def_elo[away] -= (K_def * (actual_pts_away - expected_pts_home))/league_avg_pts
     # update elo AFTER the game
     elo[home] += K * (home_win - exp_home)
     elo[away] += K * (away_win - exp_away)
+
+df["h2h_home_win_pct"] = h2h_home_pct
 
 df["home_elo"] = home_elo_list
 df["away_elo"] = away_elo_list
 df["elo_diff"] = df["home_elo"] - df["away_elo"]
 
+df["home_def_elo"] = home_def_elo_list
+df["away_def_elo"] = away_def_elo_list
+df["def_elo_diff"] = df["away_def_elo"] - df["home_def_elo"]
+
+
+
+
 FEATURES = [
+    "h2h_home_win_pct",
     "elo_diff",
+    "def_elo_diff",
     "home_pts_avg_last_5",
     "away_pts_avg_last_5",
     "home_fg_pct_last_5",
